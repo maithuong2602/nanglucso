@@ -7,6 +7,7 @@ import CompetencyTable from './components/CompetencyTable';
 import ScheduleTable from './components/ScheduleTable';
 import LessonPlanDoc from './components/LessonPlanDoc';
 import CompetencyMatrix from './components/CompetencyMatrix';
+import ActivityTable from './components/ActivityTable';
 import Toast, { ToastMessage } from './components/Toast';
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { RotateCcw } from 'lucide-react';
@@ -27,6 +28,11 @@ const callWithRetry = async <T,>(fn: () => Promise<T>, retries = 3, delay = 2000
         }
         throw error;
     }
+};
+
+const isActivityTopic = (topicName: string) => {
+    const lower = topicName.toLowerCase();
+    return lower.includes("stem") || lower.includes("clb") || lower.includes("câu lạc bộ") || lower.includes("bổ trợ") || lower.includes("trải nghiệm") || lower.includes("ngoại khóa");
 };
 
 function App() {
@@ -111,13 +117,45 @@ function App() {
         updateCurriculum(newData);
     };
 
+    // Handler to update activity in PL2 across grades
+    const handleUpdateActivity = (grade: string, lessonId: number | string, updates: Partial<Lesson>) => {
+        const gradeData = fullData[currentSubject]?.[grade];
+        if (!gradeData) return;
+
+        // Find the lesson
+        let found = false;
+        const newGradeData = gradeData.map(topic => {
+            if (found) return topic;
+            if (!isActivityTopic(topic.topic)) return topic;
+
+            const lessonIdx = topic.lessons.findIndex(l => l.id === lessonId);
+            if (lessonIdx !== -1) {
+                const newLessons = [...topic.lessons];
+                newLessons[lessonIdx] = { ...newLessons[lessonIdx], ...updates };
+                found = true;
+                return { ...topic, lessons: newLessons };
+            }
+            return topic;
+        });
+
+        if (found) {
+            setFullData(prev => ({
+                ...prev,
+                [currentSubject]: {
+                    ...prev[currentSubject],
+                    [grade]: newGradeData
+                }
+            }));
+        }
+    };
+
     // Handler to add supplementary STEM/Club lesson from Matrix
     const handleAddSupplementary = (grade: Grade, title: string, competencyCode: string) => {
         const targetData = fullData[currentSubject]?.[grade] || [];
         const newData = [...targetData];
         
         // Find or create "Hoạt động bổ trợ / STEM" topic
-        let topicIdx = newData.findIndex(t => t.topic.includes("Hoạt động bổ trợ") || t.topic.includes("STEM") || t.topic.includes("CLB"));
+        let topicIdx = newData.findIndex(t => isActivityTopic(t.topic));
         if (topicIdx === -1) {
             newData.push({ topic: "Hoạt động bổ trợ / STEM / CLB", semester: 2, lessons: [] });
             topicIdx = newData.length - 1;
@@ -129,8 +167,10 @@ function App() {
             yccd: [`Phát triển năng lực số: ${competencyCode}`],
             mappings: { [competencyCode]: { selected: true, type: 'manual', reason: 'Hoạt động tăng cường lấp lỗ hổng năng lực.' } },
             periods: 2,
-            equipment: "Phòng máy tính / Phòng STEM",
-            location: "Trường học"
+            equipment: "Phòng STEM",
+            location: "Trường học",
+            host: "GV Bộ môn",
+            collaborator: "GVCN"
         };
 
         newData[topicIdx].lessons.push(newLesson);
@@ -147,8 +187,14 @@ function App() {
     };
 
     const handleExportWord = () => {
-        const fileName = viewMode === 'pl1' ? "Phu_luc_1_Ke_hoach_NLS" : viewMode === 'pl3' ? "Phu_luc_3_Ke_hoach_Day_hoc" : "Phu_luc_4_KHBD_CV5512";
-        const orientation = viewMode === 'pl4' ? 'portrait' : 'landscape';
+        let fileName = "";
+        let orientation = "portrait";
+        
+        if (viewMode === 'pl1') fileName = "Phu_luc_1_Ke_hoach_NLS";
+        else if (viewMode === 'pl2') { fileName = "Phu_luc_2_Ke_hoach_HDGD"; orientation = "landscape"; }
+        else if (viewMode === 'pl3') fileName = "Phu_luc_3_Ke_hoach_Day_hoc";
+        else { fileName = "Phu_luc_4_KHBD_CV5512"; orientation = "portrait"; }
+
         const pageSize = orientation === 'landscape' ? '29.7cm 21cm' : '21cm 29.7cm';
         
         let htmlContent = `
@@ -179,7 +225,6 @@ function App() {
                 <div class="title-main">KẾ HOẠCH DẠY HỌC TÍCH HỢP NĂNG LỰC SỐ (PHỤ LỤC 1)</div>
                 <div class="subtitle">Môn: ${currentSubject} - Khối: ${currentGrade}</div>
              `;
-             // ... (Keeping existing PL1 Logic omitted for brevity but assuming it is same as previous) ...
              let globalPeriod = 1;
              let stt = 1;
             [1, 2].forEach(sem => {
@@ -199,6 +244,102 @@ function App() {
                 });
                 htmlContent += `</tbody></table>`;
             });
+        } else if (viewMode === 'pl2') {
+             htmlContent += `
+                <table style="width: 100%; border: none; margin-bottom: 20px;">
+                    <tr>
+                        <td style="width: 40%; text-align: center; vertical-align: top; border: none;">
+                            TRƯỜNG: ........................................<br>
+                            <b>TỔ: .............................................</b>
+                        </td>
+                        <td style="width: 60%; text-align: center; vertical-align: top; border: none;">
+                            <b>CỘNG HOÀ XÃ HỘI CHỦ NGHĨA VIỆT NAM</b><br>
+                            <b>Độc lập - Tự do - Hạnh phúc</b>
+                        </td>
+                    </tr>
+                </table>
+
+                <div style="text-align: center; font-weight: bold; margin-bottom: 5px; margin-top: 20px;">
+                    KẾ HOẠCH TỔ CHỨC CÁC HOẠT ĐỘNG GIÁO DỤC CỦA TỔ CHUYÊN MÔN
+                </div>
+                <div style="text-align: center; margin-bottom: 20px; font-weight: bold;">(Năm học 20..... - 20.....)</div>
+
+                <div style="text-align: right; font-style: italic; margin-bottom: 20px;">
+                    Phụ lục II<br>
+                    KHUNG KẾ HOẠCH TỔ CHỨC CÁC HOẠT ĐỘNG GIÁO DỤC CỦA TỔ CHUYÊN MÔN<br>
+                    (Kèm theo Công văn số 5512/BGDĐT-GDTrH ngày 18 tháng 12 năm 2020 của Bộ GDĐT)
+                </div>
+             `;
+             
+             const grades: Grade[] = ["6", "7", "8", "9"];
+             let hasActivity = false;
+
+             grades.forEach((g, gIdx) => {
+                 const gData = currentSubjectData[g] || [];
+                 
+                 // Calculate timings
+                 let currentWeek = 1;
+                 const lessonTimings: Record<string | number, string> = {};
+                 
+                 gData.forEach(topic => {
+                     if (topic.semester === 2 && currentWeek < 19) currentWeek = 19;
+                     topic.lessons.forEach(l => {
+                         const p = l.periods || (l.title.toLowerCase().includes("kiểm tra") ? 1 : 2);
+                         const start = currentWeek;
+                         const end = currentWeek + p - 1;
+                         const timing = start === end ? `Tuần ${start}` : `Tuần ${start} - ${end}`;
+                         lessonTimings[l.id] = timing;
+                         currentWeek += p;
+                     });
+                 });
+
+                 const activityLessons: Lesson[] = [];
+                 gData.forEach(t => {
+                     if (isActivityTopic(t.topic)) activityLessons.push(...t.lessons);
+                 });
+
+                 if (activityLessons.length > 0) {
+                     hasActivity = true;
+                     htmlContent += `<div style="font-weight:bold; margin-top:15px; margin-bottom:5px;">${gIdx + 1}. Khối lớp: ${g}; Số học sinh: ....................</div>`;
+                     htmlContent += `<table><thead><tr>
+                        <th class="header-cell" style="width:5%">STT</th>
+                        <th class="header-cell" style="width:20%">Chủ đề<br>(1)</th>
+                        <th class="header-cell" style="width:25%">Yêu cầu cần đạt<br>(2)</th>
+                        <th class="header-cell" style="width:5%">Số tiết<br>(3)</th>
+                        <th class="header-cell" style="width:10%">Thời điểm<br>(4)</th>
+                        <th class="header-cell" style="width:10%">Địa điểm<br>(5)</th>
+                        <th class="header-cell" style="width:10%">Chủ trì<br>(6)</th>
+                        <th class="header-cell" style="width:10%">Phối hợp<br>(7)</th>
+                        <th class="header-cell" style="width:5%">Điều kiện<br>(8)</th>
+                     </tr></thead><tbody>`;
+                     
+                     activityLessons.forEach((l, i) => {
+                         htmlContent += `<tr>
+                            <td class="text-center">${i + 1}</td>
+                            <td>${l.title}</td>
+                            <td>${l.yccd.map(y => `- ${y}`).join('<br>')}</td>
+                            <td class="text-center">${l.periods || 2}</td>
+                            <td class="text-center">${lessonTimings[l.id] || ''}</td>
+                            <td>${l.location || ''}</td>
+                            <td>${l.host || ''}</td>
+                            <td>${l.collaborator || ''}</td>
+                            <td>${l.equipment || ''}</td>
+                         </tr>`;
+                     });
+                     htmlContent += `</tbody></table>`;
+                 }
+             });
+
+             if (!hasActivity) {
+                 htmlContent += `<p style="text-align:center; font-style:italic;">Chưa có hoạt động giáo dục nào.</p>`;
+             }
+
+             htmlContent += `
+                <div style="display:flex; justify-content:space-between; margin-top:30px; font-weight:bold;">
+                    <div style="text-align:center;">TỔ TRƯỞNG<br><span style="font-weight:normal; font-style:italic;">(Ký và ghi rõ họ tên)</span></div>
+                    <div style="text-align:center;">HIỆU TRƯỞNG<br><span style="font-weight:normal; font-style:italic;">(Ký và ghi rõ họ tên)</span></div>
+                </div>
+             `;
         } else if (viewMode === 'pl3') {
             // ... existing PL3 export logic ...
             htmlContent += `<div class="title-main">KẾ HOẠCH DẠY HỌC MÔN HỌC (PHỤ LỤC 3)</div><div class="subtitle">Môn: ${currentSubject} - Khối: ${currentGrade}</div>`;
@@ -223,6 +364,7 @@ function App() {
                 htmlContent += `</tbody></table>`;
             });
         } else if (viewMode === 'pl4' && activeLesson) {
+            // ... (Existing PL4 logic) ...
             const selectedCodes = Object.keys(activeLesson.mappings || {}).filter(c => activeLesson.mappings[c].selected);
             const getReason = (c: string) => activeLesson.mappings[c]?.reason || '';
             const getText = (c: string) => activeCompetencies.find(x => x.code === c)?.text || '';
@@ -264,7 +406,6 @@ function App() {
                 <div class="section-title">III. TIẾN TRÌNH DẠY HỌC</div>
             `;
 
-            // NEW: RENDER FROM STRUCTURED planData IF AVAILABLE
             if (activeLesson.planData && activeLesson.planData.length > 0) {
                 activeLesson.planData.forEach(section => {
                     htmlContent += `
@@ -284,7 +425,6 @@ function App() {
                     `;
                 });
             } else if (activeLesson.activities) {
-                // FALLBACK TO LEGACY/RAW HTML
                 htmlContent += activeLesson.activities;
             } else {
                 htmlContent += `<p style="text-align:center; font-style:italic;">(Chưa có nội dung chi tiết)</p>`;
@@ -295,7 +435,7 @@ function App() {
         const blob = new Blob(['\ufeff', htmlContent], { type: 'application/msword' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
-        link.download = `${fileName}_${currentSubject}_L${currentGrade}.doc`;
+        link.download = `${fileName}_${currentSubject}_${viewMode === 'pl2' ? 'ToanCap' : `L${currentGrade}`}.doc`;
         link.click();
         addToast('success', 'Đã xuất file Word thành công!');
     };
@@ -341,43 +481,50 @@ function App() {
                     onMoveLesson={(id, dir) => {}} onMoveTopic={(idx, dir) => {}} onReorderLesson={() => {}}
                 />
                 <main className="flex-grow overflow-y-auto custom-scroll p-6 bg-slate-50 relative">
-                    {activeLesson ? (
-                        <>
-                            {viewMode === 'pl1' && <CompetencyTable 
-                                lesson={activeLesson} competencies={activeCompetencies} currentSubject={currentSubject}
-                                filterMode={filterMode} onToggleFilter={() => setFilterMode(!filterMode)}
-                                topicName={context?.topic.topic || ""} isAiLoading={isAiLoading}
-                                usageMap={globalUsageMap} allLessonsInGrade={allLessonsInGrade}
-                                referenceITData={referenceITData}
-                                onUpdateTitle={(t) => updateActiveLesson({ title: t })}
-                                onUpdateTopic={(t) => { const nd = [...currentGradeData]; nd[context!.topicIndex].topic = t; updateCurriculum(nd); }}
-                                onUpdateYCCD={(i, v) => { const ny = [...activeLesson.yccd]; ny[i] = v; updateActiveLesson({ yccd: ny }); }}
-                                onBulkUpdateYCCD={(y) => updateActiveLesson({ yccd: y })}
-                                onAddYCCD={() => updateActiveLesson({ yccd: [...activeLesson.yccd, ""] })}
-                                onDeleteYCCD={(i) => { const ny = [...activeLesson.yccd]; ny.splice(i, 1); updateActiveLesson({ yccd: ny }); }}
-                                onMappingChange={(c, s) => { const nm = { ...activeLesson.mappings }; if (s) nm[c] = { selected: true, reason: '' }; else delete nm[c]; updateActiveLesson({ mappings: nm }); }}
-                                onReasonChange={(c, r) => { const nm = { ...activeLesson.mappings }; if (nm[c]) nm[c].reason = r; updateActiveLesson({ mappings: nm }); }}
-                                onSuggestAI={() => {}} onRewriteReasonWithAI={async () => {}} onSplitLesson={() => {}} onMergeNext={() => {}} onMergePrevious={() => {}}
-                                canMergeNext={false} canMergePrevious={false}
-                            />}
-                            {viewMode === 'pl3' && <ScheduleTable 
-                                topics={currentGradeData} competencies={activeCompetencies}
-                                onUpdateLesson={(id, upd) => updateCurriculum(currentGradeData.map(t => ({ ...t, lessons: t.lessons.map(l => l.id === id ? { ...l, ...upd } : l) })))}
-                                onBulkUpdateField={(f, v) => {
-                                    updateCurriculum(currentGradeData.map(t => ({ ...t, lessons: t.lessons.map(l => ({ ...l, [f]: v })) })));
-                                    addToast('success', `Đã áp dụng "${v}" cho toàn bộ kế hoạch.`);
-                                }}
-                            />}
-                            {viewMode === 'pl4' && <LessonPlanDoc 
-                                lesson={activeLesson} 
-                                competencies={activeCompetencies} 
-                                currentSubject={currentSubject}
-                                currentGrade={currentGrade}
-                                onUpdateLesson={updateActiveLesson}
-                            />}
-                        </>
+                    {viewMode === 'pl2' ? (
+                        <ActivityTable 
+                            fullSubjectData={currentSubjectData}
+                            onUpdateActivity={handleUpdateActivity}
+                        />
                     ) : (
-                        <div className="h-full flex items-center justify-center text-slate-400 italic">Chọn bài học để bắt đầu.</div>
+                        activeLesson ? (
+                            <>
+                                {viewMode === 'pl1' && <CompetencyTable 
+                                    lesson={activeLesson} competencies={activeCompetencies} currentSubject={currentSubject}
+                                    filterMode={filterMode} onToggleFilter={() => setFilterMode(!filterMode)}
+                                    topicName={context?.topic.topic || ""} isAiLoading={isAiLoading}
+                                    usageMap={globalUsageMap} allLessonsInGrade={allLessonsInGrade}
+                                    referenceITData={referenceITData}
+                                    onUpdateTitle={(t) => updateActiveLesson({ title: t })}
+                                    onUpdateTopic={(t) => { const nd = [...currentGradeData]; nd[context!.topicIndex].topic = t; updateCurriculum(nd); }}
+                                    onUpdateYCCD={(i, v) => { const ny = [...activeLesson.yccd]; ny[i] = v; updateActiveLesson({ yccd: ny }); }}
+                                    onBulkUpdateYCCD={(y) => updateActiveLesson({ yccd: y })}
+                                    onAddYCCD={() => updateActiveLesson({ yccd: [...activeLesson.yccd, ""] })}
+                                    onDeleteYCCD={(i) => { const ny = [...activeLesson.yccd]; ny.splice(i, 1); updateActiveLesson({ yccd: ny }); }}
+                                    onMappingChange={(c, s) => { const nm = { ...activeLesson.mappings }; if (s) nm[c] = { selected: true, reason: '' }; else delete nm[c]; updateActiveLesson({ mappings: nm }); }}
+                                    onReasonChange={(c, r) => { const nm = { ...activeLesson.mappings }; if (nm[c]) nm[c].reason = r; updateActiveLesson({ mappings: nm }); }}
+                                    onSuggestAI={() => {}} onRewriteReasonWithAI={async () => {}} onSplitLesson={() => {}} onMergeNext={() => {}} onMergePrevious={() => {}}
+                                    canMergeNext={false} canMergePrevious={false}
+                                />}
+                                {viewMode === 'pl3' && <ScheduleTable 
+                                    topics={currentGradeData} competencies={activeCompetencies}
+                                    onUpdateLesson={(id, upd) => updateCurriculum(currentGradeData.map(t => ({ ...t, lessons: t.lessons.map(l => l.id === id ? { ...l, ...upd } : l) })))}
+                                    onBulkUpdateField={(f, v) => {
+                                        updateCurriculum(currentGradeData.map(t => ({ ...t, lessons: t.lessons.map(l => ({ ...l, [f]: v })) })));
+                                        addToast('success', `Đã áp dụng "${v}" cho toàn bộ kế hoạch.`);
+                                    }}
+                                />}
+                                {viewMode === 'pl4' && <LessonPlanDoc 
+                                    lesson={activeLesson} 
+                                    competencies={activeCompetencies} 
+                                    currentSubject={currentSubject}
+                                    currentGrade={currentGrade}
+                                    onUpdateLesson={updateActiveLesson}
+                                />}
+                            </>
+                        ) : (
+                            <div className="h-full flex items-center justify-center text-slate-400 italic">Chọn bài học để bắt đầu.</div>
+                        )
                     )}
                 </main>
             </div>
