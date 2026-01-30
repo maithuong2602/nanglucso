@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { Grade, Subject, ViewMode } from '../types';
-import { Layers, Download, FileText, Layout, FileType, BarChart3 } from 'lucide-react';
+import { Layers, Download, FileText, Layout, FileType, BarChart3, Presentation } from 'lucide-react';
 
 interface HeaderProps {
     currentGrade: Grade;
@@ -46,6 +46,12 @@ const Header: React.FC<HeaderProps> = ({
                     className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${viewMode === 'pl1' ? 'bg-white text-teal-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                 >
                     <Layout size={14} /> Phụ lục 1
+                </button>
+                <button 
+                    onClick={() => setViewMode('pl2')}
+                    className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${viewMode === 'pl2' ? 'bg-white text-teal-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                    <Presentation size={14} /> Phụ lục 2
                 </button>
                 <button 
                     onClick={() => setViewMode('pl3')}
