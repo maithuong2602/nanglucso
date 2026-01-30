@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Competency, Lesson, Subject, Topic } from '../types';
-import { Plus, X, Search, Sparkles, Wand2, Loader2, Upload, FileText, Info, Scissors, Merge, BookOpen, Check, History, MapPin } from 'lucide-react';
+import { Plus, X, Search, Sparkles, Wand2, Loader2, Upload, FileText, Info, Scissors, Merge, BookOpen, Check, History, MapPin, MonitorPlay } from 'lucide-react';
 import LoadingOverlay from './LoadingOverlay';
 
 // Helper component for auto-resizing textarea
@@ -107,6 +107,72 @@ const CompetencyTable: React.FC<CompetencyTableProps> = ({
         }
         return null;
     }, [allLessonsInGrade, lesson.id]);
+    
+    // Calculate Current Week of the active lesson
+    const currentLessonStartWeek = useMemo(() => {
+        let week = 1;
+        let found = false;
+        
+        // This simple logic mimics ScheduleTable's calculation
+        // NOTE: It doesn't handle semester breaks perfectly if not strictly sequential, 
+        // but assumes standard 18 week Sem 1 + 17 week Sem 2 structure
+        
+        let semester1Weeks = 0;
+
+        // Count weeks for Sem 1
+        for (const l of allLessonsInGrade) {
+            // Need to know semester from parent, but simplified: assume order matches structure
+             // We can just iterate linearly. If we cross to Sem 2, jump to week 19.
+             // However, allLessonsInGrade is flat.
+             // Let's iterate until we hit current lesson.
+             if (String(l.id) === String(lesson.id)) {
+                 found = true;
+                 break;
+             }
+             const periods = l.periods || (l.title.toLowerCase().includes("kiểm tra") ? 1 : 2);
+             week += periods;
+        }
+
+        // Logic adjustment for Semester 2 reset if user is in sem 2
+        // Since we don't have semester info on individual Lesson in allLessonsInGrade (it's on Topic),
+        // we might need a more robust way, but for now linear accumulation is a good approximation 
+        // or we assume user curriculum is linear.
+        // A better check: if week > 18, it might be sem 2, but usually Sem 2 starts at week 19.
+        // For simplicity in Suggestion, we use raw linear week count.
+        return week;
+    }, [allLessonsInGrade, lesson.id]);
+
+    // Calculate available IT Competencies based on schedule
+    const availableITCompetencies = useMemo(() => {
+        // If current subject IS IT, no need to suggest from IT
+        if (currentSubject === 'Tin học' || !referenceITData) return {};
+
+        const map: Record<string, string[]> = {}; // code -> [Lesson Titles]
+        let itWeek = 1;
+
+        referenceITData.forEach(topic => {
+            // Reset to week 19 if start of Semester 2 (heuristic)
+            if (topic.semester === 2 && itWeek < 19) itWeek = 19;
+
+            topic.lessons.forEach(itLesson => {
+                const duration = itLesson.periods || (itLesson.title.toLowerCase().includes("kiểm tra") ? 1 : 2);
+                
+                // If IT lesson starts BEFORE or AT THE SAME TIME as current lesson
+                if (itWeek <= currentLessonStartWeek) {
+                    if (itLesson.mappings) {
+                        Object.keys(itLesson.mappings).forEach(code => {
+                            if (itLesson.mappings[code].selected) {
+                                if (!map[code]) map[code] = [];
+                                map[code].push(`${itLesson.title} (Tuần ${itWeek})`);
+                            }
+                        });
+                    }
+                }
+                itWeek += duration;
+            });
+        });
+        return map;
+    }, [referenceITData, currentSubject, currentLessonStartWeek]);
 
     const [showSplitModal, setShowSplitModal] = useState(false);
     const [splitTitle, setSplitTitle] = useState('');
@@ -334,6 +400,9 @@ const CompetencyTable: React.FC<CompetencyTableProps> = ({
                                     const reason = mapping?.reason || '';
                                     const isSuggested = mapping?.type === 'suggested';
                                     const usages = usageMap[comp.code] || [];
+                                    
+                                    // Cross-reference IT data
+                                    const itSuggestions = availableITCompetencies[comp.code];
 
                                     return (
                                         <tr key={comp.code} className={`group transition-colors ${isSelected ? 'bg-teal-50/30' : 'hover:bg-slate-50'}`}>
@@ -368,6 +437,21 @@ const CompetencyTable: React.FC<CompetencyTableProps> = ({
                                                 <div className="text-sm text-slate-700 leading-relaxed font-medium mb-3">
                                                     {comp.text}
                                                 </div>
+
+                                                {/* IT Cross-Reference Suggestion */}
+                                                {itSuggestions && itSuggestions.length > 0 && (
+                                                    <div className="mb-3 p-2 bg-blue-50/70 border border-blue-100 rounded-lg flex gap-2 items-start">
+                                                        <MonitorPlay size={14} className="text-blue-600 mt-0.5 shrink-0" />
+                                                        <div>
+                                                            <div className="text-[10px] font-bold text-blue-700 uppercase tracking-wide mb-1">Đã học ở môn Tin học:</div>
+                                                            <div className="text-[11px] text-blue-800 leading-tight">
+                                                                {itSuggestions.map((s, i) => (
+                                                                    <div key={i} className="mb-0.5">• {s}</div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
                                                 
                                                 {/* Global Usage Section */}
                                                 {usages.length > 0 && (
