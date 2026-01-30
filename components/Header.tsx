@@ -1,6 +1,7 @@
+
 import React from 'react';
 import { Grade, Subject, ViewMode } from '../types';
-import { Layers, Download, FileText, Layout, FileType } from 'lucide-react';
+import { Layers, Download, FileText, Layout, FileType, BarChart3 } from 'lucide-react';
 
 interface HeaderProps {
     currentGrade: Grade;
@@ -11,6 +12,7 @@ interface HeaderProps {
     setViewMode: (mode: ViewMode) => void;
     onExportWord: () => void;
     onExportJson: () => void;
+    onOpenMatrix: () => void;
 }
 
 const SUBJECTS: Subject[] = [
@@ -22,7 +24,8 @@ const Header: React.FC<HeaderProps> = ({
     currentGrade, setGrade, 
     currentSubject, setSubject, 
     viewMode, setViewMode,
-    onExportWord, onExportJson 
+    onExportWord, onExportJson,
+    onOpenMatrix
 }) => {
     return (
         <header className="bg-white h-16 border-b border-slate-200 flex-none z-30 shadow-sm px-6 flex items-center justify-between">
@@ -59,6 +62,14 @@ const Header: React.FC<HeaderProps> = ({
             </nav>
 
             <div className="flex items-center gap-3">
+                <button
+                    onClick={onOpenMatrix}
+                    className="flex items-center gap-2 bg-indigo-50 text-indigo-700 border border-indigo-100 hover:bg-indigo-100 px-3 py-2 rounded-lg transition text-[10px] font-bold uppercase"
+                    title="Xem bảng kiểm dò NLS toàn cấp"
+                >
+                    <BarChart3 size={14} /> Bảng kiểm NLS
+                </button>
+
                 <div className="flex items-center bg-slate-50 rounded-lg p-1 border border-slate-200">
                     <select 
                         value={currentSubject}
