@@ -1,3 +1,5 @@
+
+
 export interface Competency {
     code: string;
     text: string;
@@ -13,21 +15,41 @@ export interface Mappings {
     [code: string]: MappingDetail;
 }
 
+export interface LessonStep {
+    id: string;
+    title: string;
+    content: string;
+    nlsCodes?: string[];
+}
+
+export interface LessonSection {
+    id: string;
+    label: string; // A, B, C...
+    title: string; // Tên hoạt động
+    objective: string;
+    content: string;
+    product: string;
+    steps: LessonStep[]; // 4 bước tổ chức
+    duration?: number; // số phút
+}
+
 export interface Lesson {
     id: number | string;
     title: string;
     yccd: string[]; 
     mappings: Mappings;
-    equipment?: string;   // For PL3
-    location?: string;    // For PL3
-    objectives?: string;  // For PL4
-    activities?: string;  // For PL4
+    periods?: number;      // Số tiết
+    equipment?: string;   
+    location?: string;    
+    objectives?: string;  
+    activities?: string;  // Legacy HTML content
+    planData?: LessonSection[]; // New structured content
 }
 
 export interface Topic {
     topic: string;
     lessons: Lesson[];
-    semester?: 1 | 2; // Added to handle HK1/HK2 separation
+    semester?: 1 | 2; 
 }
 
 export interface CurriculumData {
