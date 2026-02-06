@@ -1,6 +1,5 @@
-
-import { CurriculumData, Grade, Subject, Lesson, Topic, ViewMode } from './types';
-import { CURRICULUM_DATA, COMPETENCIES_TC1, COMPETENCIES_TC2 } from './constants';
+import { CurriculumData, Grade, Subject, Lesson, Topic, ViewMode, Mappings } from './types';
+import { CURRICULUM_DATA, MATH_CURRICULUM, COMPETENCIES_TC1, COMPETENCIES_TC2 } from './constants';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import CompetencyTable from './components/CompetencyTable';
@@ -9,26 +8,14 @@ import LessonPlanDoc from './components/LessonPlanDoc';
 import CompetencyMatrix from './components/CompetencyMatrix';
 import ActivityTable from './components/ActivityTable';
 import Toast, { ToastMessage } from './components/Toast';
-import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
-import { RotateCcw } from 'lucide-react';
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import LoadingOverlay from './components/LoadingOverlay';
+import { GoogleGenAI } from "@google/genai";
+import { BrainCircuit, X, Sparkles } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 
-const STORAGE_KEY = 'eduplan_data_v4';
-
-const isQuotaError = (error: any): boolean => {
-    if (error?.status === 429 || error?.code === 429 || String(error?.message).includes("429")) return true;
-    return false;
-};
-
-const callWithRetry = async <T,>(fn: () => Promise<T>, retries = 3, delay = 2000): Promise<T> => {
-    try { return await fn(); } catch (error) {
-        if (retries > 0 && isQuotaError(error)) {
-            await new Promise(resolve => setTimeout(resolve, delay));
-            return callWithRetry<T>(fn, retries - 1, delay * 2);
-        }
-        throw error;
-    }
-};
+// Nâng cấp version để reset cache cũ, đảm bảo cấu trúc dữ liệu mới được áp dụng
+const STORAGE_KEY = 'eduplan_data_v5'; 
+const UI_STATE_KEY = 'eduplan_ui_state_v1';
 
 const isActivityTopic = (topicName: string) => {
     const lower = topicName.toLowerCase();
@@ -36,44 +23,90 @@ const isActivityTopic = (topicName: string) => {
 };
 
 function App() {
+    // Load Data with Smart Merge Logic
     const [fullData, setFullData] = useState<Record<string, CurriculumData>>(() => {
+        // 1. Dữ liệu mặc định chuẩn
+        const defaultData: Record<string, CurriculumData> = { 
+            "Tin học": JSON.parse(JSON.stringify(CURRICULUM_DATA)),
+            "Toán": JSON.parse(JSON.stringify(MATH_CURRICULUM))
+        };
+
         try {
             const savedData = localStorage.getItem(STORAGE_KEY);
-            if (savedData) return JSON.parse(savedData);
+            if (savedData) {
+                const parsed = JSON.parse(savedData);
+                
+                // 2. Logic hòa trộn thông minh (Deep Merge for Subjects)
+                // Nếu người dùng đã lưu dữ liệu, ta dùng dữ liệu đó.
+                // NHƯNG nếu trong dữ liệu lưu thiếu môn nào (ví dụ thiếu Toán do lưu từ bản cũ), ta sẽ bù từ default vào.
+                const mergedData = { ...parsed };
+                
+                Object.keys(defaultData).forEach(subject => {
+                    if (!mergedData[subject]) {
+                        mergedData[subject] = defaultData[subject];
+                    }
+                });
+
+                return mergedData;
+            }
         } catch (error) { console.error("Load failed", error); }
-        return { "Tin học": JSON.parse(JSON.stringify(CURRICULUM_DATA)) };
+        
+        return defaultData;
     });
 
-    const [currentGrade, setGrade] = useState<Grade>("6");
-    const [currentSubject, setSubject] = useState<Subject>("Tin học");
-    const [currentLessonId, setCurrentLessonId] = useState<number | string | null>(null);
-    const [viewMode, setViewMode] = useState<ViewMode>('pl1');
+    // Load UI State
+    const [uiState] = useState(() => {
+        try {
+            const saved = localStorage.getItem(UI_STATE_KEY);
+            return saved ? JSON.parse(saved) : {};
+        } catch { return {}; }
+    });
+
+    const [currentGrade, setGrade] = useState<Grade>(uiState.grade || "6");
+    const [currentSubject, setSubject] = useState<Subject>(uiState.subject || "Tin học");
+    const [currentLessonId, setCurrentLessonId] = useState<number | string | null>(uiState.lessonId || null);
+    const [viewMode, setViewMode] = useState<ViewMode>(uiState.viewMode || 'pl1');
+    
     const [filterMode, setFilterMode] = useState<boolean>(true);
     const [toasts, setToasts] = useState<ToastMessage[]>([]);
     const [isAiLoading, setIsAiLoading] = useState(false);
     const [showMatrixModal, setShowMatrixModal] = useState(false);
+    
+    const [showAiImportModal, setShowAiImportModal] = useState(false);
+    const [aiImportText, setAiImportText] = useState('');
 
-    useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(fullData)); }, [fullData]);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const addToast = (type: 'success' | 'error' | 'info', message: string) => {
+    // Debounced Data Save
+    useEffect(() => { 
+        const handler = setTimeout(() => {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(fullData));
+        }, 500); // Save after 500ms of inactivity
+        return () => clearTimeout(handler);
+    }, [fullData]);
+
+    // UI State Save
+    useEffect(() => {
+        const state = { grade: currentGrade, subject: currentSubject, lessonId: currentLessonId, viewMode };
+        localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
+    }, [currentGrade, currentSubject, currentLessonId, viewMode]);
+
+    const addToast = useCallback((type: 'success' | 'error' | 'info', message: string) => {
         const id = Date.now();
         setToasts(prev => [...prev, { id, type, message }]);
         setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 5000);
-    };
+    }, []);
 
     const currentSubjectData = fullData[currentSubject] || {};
     const currentGradeData = currentSubjectData[currentGrade] || [];
-    
-    // Extract IT Data for cross-reference
     const referenceITData = fullData["Tin học"]?.[currentGrade] || [];
-    // Full IT Data for Matrix Gap Analysis
     const fullITData = fullData["Tin học"] || {};
     
     const globalUsageMap = useMemo(() => {
         const map: Record<string, Array<{ grade: string, lessonTitle: string, isCurrent: boolean }>> = {};
         const grades: Grade[] = ["6", "7", "8", "9"];
         grades.forEach(g => {
-            const gradeTopics = currentSubjectData[g] || [];
+            const gradeTopics = (fullData[currentSubject] || {})[g] || [];
             gradeTopics.forEach(topic => {
                 topic.lessons.forEach(l => {
                     if (l.mappings) {
@@ -86,10 +119,12 @@ function App() {
             });
         });
         return map;
-    }, [currentSubjectData, currentGrade, currentLessonId]);
+    }, [fullData, currentSubject, currentGrade, currentLessonId]);
 
     const allLessonsInGrade = useMemo(() => currentGradeData.reduce((acc: Lesson[], topic) => [...acc, ...topic.lessons], []), [currentGradeData]);
+    
     const getLessonContext = useCallback(() => {
+        if (!currentLessonId) return null;
         for (let tIndex = 0; tIndex < currentGradeData.length; tIndex++) {
             const topic = currentGradeData[tIndex];
             const lIndex = topic.lessons.findIndex(l => String(l.id) === String(currentLessonId));
@@ -103,96 +138,236 @@ function App() {
     const activeCompetencies = (currentGrade === "6" || currentGrade === "7") ? COMPETENCIES_TC1 : COMPETENCIES_TC2;
 
     const updateCurriculum = (newGradeData: Topic[]) => {
-        setFullData(prev => ({ ...prev, [currentSubject]: { ...prev[currentSubject], [currentGrade]: newGradeData } }));
+        setFullData(prev => {
+            // Sao chép an toàn để đảm bảo tính bất biến
+            const nextState = { ...prev };
+            
+            // Đảm bảo object cho môn học hiện tại tồn tại
+            if (!nextState[currentSubject]) {
+                nextState[currentSubject] = {};
+            }
+            
+            // Cập nhật dữ liệu khối lớp
+            nextState[currentSubject] = {
+                ...nextState[currentSubject],
+                [currentGrade]: newGradeData
+            };
+            
+            return nextState;
+        });
     };
 
     const updateActiveLesson = (updates: Partial<Lesson>) => {
         if (!context) return;
-        const newData = [...currentGradeData];
-        const newTopic = { ...newData[context.topicIndex] };
-        const newLessons = [...newTopic.lessons];
-        newLessons[context.lessonIndex] = { ...newLessons[context.lessonIndex], ...updates };
-        newTopic.lessons = newLessons;
-        newData[context.topicIndex] = newTopic;
+        const newData = JSON.parse(JSON.stringify(currentGradeData));
+        newData[context.topicIndex].lessons[context.lessonIndex] = { 
+            ...newData[context.topicIndex].lessons[context.lessonIndex], 
+            ...updates 
+        };
         updateCurriculum(newData);
     };
 
-    // Handler to update activity in PL2 across grades
-    const handleUpdateActivity = (grade: string, lessonId: number | string, updates: Partial<Lesson>) => {
-        const gradeData = fullData[currentSubject]?.[grade];
-        if (!gradeData) return;
+    // Safe Setters to avoid invalid lesson pointers
+    const handleSetGrade = (g: Grade) => {
+        setGrade(g);
+        setCurrentLessonId(null);
+    };
+    const handleSetSubject = (s: Subject) => {
+        setSubject(s);
+        setCurrentLessonId(null);
+    };
 
-        // Find the lesson
-        let found = false;
-        const newGradeData = gradeData.map(topic => {
-            if (found) return topic;
-            if (!isActivityTopic(topic.topic)) return topic;
+    const handleAddSupplementary = useCallback((grade: Grade, title: string, competencyCode: string) => {
+        setFullData(prev => {
+            const subjectData = prev[currentSubject] ? { ...prev[currentSubject] } : {};
+            const gradeData = subjectData[grade] ? [...subjectData[grade]] : [];
+            
+            const newLesson: Lesson = {
+                id: Date.now().toString(),
+                title: title,
+                yccd: ["Thực hiện hoạt động bổ trợ phát triển năng lực số."],
+                mappings: {
+                    [competencyCode]: { selected: true, reason: 'Hoạt động bổ trợ được đề xuất từ bảng kiểm dò NLS.', type: 'manual' }
+                },
+                periods: 2,
+                equipment: "Máy tính, máy chiếu",
+                location: "Phòng học"
+            };
 
-            const lessonIdx = topic.lessons.findIndex(l => l.id === lessonId);
-            if (lessonIdx !== -1) {
-                const newLessons = [...topic.lessons];
-                newLessons[lessonIdx] = { ...newLessons[lessonIdx], ...updates };
-                found = true;
-                return { ...topic, lessons: newLessons };
+            const existingActivityTopicIndex = gradeData.findIndex(t => isActivityTopic(t.topic));
+            
+            if (existingActivityTopicIndex !== -1) {
+                gradeData[existingActivityTopicIndex] = {
+                    ...gradeData[existingActivityTopicIndex],
+                    lessons: [...gradeData[existingActivityTopicIndex].lessons, newLesson]
+                };
+            } else {
+                gradeData.push({
+                    topic: "Hoạt động bổ trợ & STEM",
+                    semester: 2,
+                    lessons: [newLesson]
+                });
             }
-            return topic;
-        });
 
-        if (found) {
-            setFullData(prev => ({
-                ...prev,
-                [currentSubject]: {
-                    ...prev[currentSubject],
-                    [grade]: newGradeData
+            subjectData[grade] = gradeData;
+            return { ...prev, [currentSubject]: subjectData };
+        });
+        addToast('success', `Đã thêm hoạt động bổ trợ cho năng lực ${competencyCode} vào Khối ${grade}.`);
+    }, [currentSubject, addToast]);
+
+    const handleUpdateLessonById = (id: number | string, updates: Partial<Lesson>) => {
+        const newData = currentGradeData.map(topic => ({
+            ...topic,
+            lessons: topic.lessons.map(l => String(l.id) === String(id) ? { ...l, ...updates } : l)
+        }));
+        updateCurriculum(newData);
+    };
+
+    const handleBulkUpdateField = (field: 'equipment' | 'location', value: string) => {
+        const newData = currentGradeData.map(topic => ({
+            ...topic,
+            lessons: topic.lessons.map(l => ({ ...l, [field]: value }))
+        }));
+        updateCurriculum(newData);
+        addToast('success', `Đã áp dụng "${value}" cho toàn bộ bài học khối ${currentGrade}.`);
+    };
+
+    const handleMoveLesson = (lessonId: number | string, direction: -1 | 1) => {
+        const newTopics = JSON.parse(JSON.stringify(currentGradeData));
+        for (let i = 0; i < newTopics.length; i++) {
+            const idx = newTopics[i].lessons.findIndex((l: Lesson) => String(l.id) === String(lessonId));
+            if (idx !== -1) {
+                const lessons = newTopics[i].lessons;
+                if (idx + direction >= 0 && idx + direction < lessons.length) {
+                    const temp = lessons[idx];
+                    lessons[idx] = lessons[idx + direction];
+                    lessons[idx + direction] = temp;
+                    updateCurriculum(newTopics);
+                    return;
                 }
-            }));
+            }
         }
     };
 
-    // Handler to add supplementary STEM/Club lesson from Matrix
-    const handleAddSupplementary = (grade: Grade, title: string, competencyCode: string) => {
-        const targetData = fullData[currentSubject]?.[grade] || [];
-        const newData = [...targetData];
-        
-        // Find or create "Hoạt động bổ trợ / STEM" topic
-        let topicIdx = newData.findIndex(t => isActivityTopic(t.topic));
-        if (topicIdx === -1) {
-            newData.push({ topic: "Hoạt động bổ trợ / STEM / CLB", semester: 2, lessons: [] });
-            topicIdx = newData.length - 1;
+    const handleMoveTopic = (topicIndex: number, direction: -1 | 1) => {
+        const newTopics = JSON.parse(JSON.stringify(currentGradeData));
+        if (topicIndex + direction >= 0 && topicIndex + direction < newTopics.length) {
+            const temp = newTopics[topicIndex];
+            newTopics[topicIndex] = newTopics[topicIndex + direction];
+            newTopics[topicIndex + direction] = temp;
+            updateCurriculum(newTopics);
+        }
+    };
+
+    const handleReorderLesson = (sourceId: number | string, targetTopicIndex: number, targetLessonIndex: number) => {
+        const newTopics = JSON.parse(JSON.stringify(currentGradeData));
+        let lessonToMove: Lesson | null = null;
+        let sourceTopicIdx = -1;
+        let sourceLessonIdx = -1;
+
+        for (let i = 0; i < newTopics.length; i++) {
+            const idx = newTopics[i].lessons.findIndex((l: Lesson) => String(l.id) === String(sourceId));
+            if (idx !== -1) {
+                sourceTopicIdx = i;
+                sourceLessonIdx = idx;
+                lessonToMove = newTopics[i].lessons[idx];
+                break;
+            }
         }
 
-        const newLesson: Lesson = {
-            id: Date.now(),
-            title: title,
-            yccd: [`Phát triển năng lực số: ${competencyCode}`],
-            mappings: { [competencyCode]: { selected: true, type: 'manual', reason: 'Hoạt động tăng cường lấp lỗ hổng năng lực.' } },
-            periods: 2,
-            equipment: "Phòng STEM",
-            location: "Trường học",
-            host: "GV Bộ môn",
-            collaborator: "GVCN"
-        };
-
-        newData[topicIdx].lessons.push(newLesson);
-
-        setFullData(prev => ({
-            ...prev,
-            [currentSubject]: {
-                ...prev[currentSubject],
-                [grade]: newData
+        if (lessonToMove && sourceTopicIdx !== -1) {
+            newTopics[sourceTopicIdx].lessons.splice(sourceLessonIdx, 1);
+            let finalTargetIdx = targetLessonIndex;
+            // Nếu di chuyển trong cùng 1 topic và bài nguồn nằm trước bài đích
+            if (sourceTopicIdx === targetTopicIndex && sourceLessonIdx < targetLessonIndex) {
+                finalTargetIdx--;
             }
-        }));
+            newTopics[targetTopicIndex].lessons.splice(finalTargetIdx, 0, lessonToMove);
+            updateCurriculum(newTopics);
+        }
+    };
+
+    const handleReorderTopic = (sourceIndex: number, targetIndex: number) => {
+        const newTopics = JSON.parse(JSON.stringify(currentGradeData));
+        const [movedTopic] = newTopics.splice(sourceIndex, 1);
         
-        addToast('success', `Đã thêm hoạt động "${title}" vào Kế hoạch dạy học Lớp ${grade}.`);
+        let finalIdx = targetIndex;
+        if (sourceIndex < targetIndex) finalIdx--;
+        
+        newTopics.splice(finalIdx, 0, movedTopic);
+        
+        // Cập nhật Học kỳ dựa trên vị trí mới
+        const prev = newTopics[finalIdx - 1];
+        const next = newTopics[finalIdx + 1];
+        if (prev) movedTopic.semester = prev.semester;
+        else if (next) movedTopic.semester = next.semester;
+
+        updateCurriculum(newTopics);
+    };
+
+    const handleAiImportCurriculum = async () => {
+        if (!aiImportText.trim()) return;
+        setShowAiImportModal(false);
+        setIsAiLoading(true);
+        try {
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const prompt = `Phân tích văn bản thô sau đây thành danh mục bài học có cấu trúc cho môn ${currentSubject}, Khối ${currentGrade}. 
+            Yêu cầu trả về mảng JSON các Topic (Chương/Chủ đề). Mỗi Topic chứa các Lesson. 
+            Mỗi Lesson cần có: title, yccd (mảng chuỗi yêu cầu cần đạt bám sát văn bản thô), periods (số tiết dự kiến), equipment (thiết bị), location (địa điểm).
+            Văn bản thô: ${aiImportText}`;
+
+            const response = await ai.models.generateContent({
+                model: 'gemini-3-flash-preview',
+                contents: prompt,
+                config: { responseMimeType: "application/json" }
+            });
+
+            const parsed = JSON.parse(response.text || "[]");
+            if (Array.isArray(parsed)) {
+                const formatted = parsed.map((t: any) => ({
+                    ...t,
+                    semester: t.semester || 1,
+                    lessons: t.lessons.map((l: any) => ({ 
+                        ...l, 
+                        id: Math.random().toString(36).substr(2, 9), 
+                        mappings: {},
+                        periods: l.periods || 2,
+                        equipment: l.equipment || "Máy tính, máy chiếu",
+                        location: l.location || "Phòng học"
+                    }))
+                }));
+                updateCurriculum(formatted);
+                addToast('success', `Đã tạo ${formatted.length} chủ đề cho môn ${currentSubject}. Dữ liệu đã được lưu!`);
+                setAiImportText('');
+            }
+        } catch (error) {
+            console.error(error);
+            addToast('error', 'Lỗi phân tích AI. Vui lòng kiểm tra lại văn bản.');
+            setShowAiImportModal(true);
+        } finally {
+            setIsAiLoading(false);
+        }
+    };
+
+    const handleBulkApplyMappings = (newMappings: Mappings) => {
+        if (!context) return;
+        const currentMappings = activeLesson?.mappings || {};
+        updateActiveLesson({
+            mappings: { ...currentMappings, ...newMappings }
+        });
+        addToast('success', 'Đã cập nhật các năng lực được gợi ý.');
     };
 
     const handleExportWord = () => {
         let fileName = "";
         let orientation = "portrait";
         
-        if (viewMode === 'pl1') fileName = "Phu_luc_1_Ke_hoach_NLS";
+        if (viewMode === 'pl1') {
+             fileName = "Phu_luc_1_Ke_hoach_NLS";
+             orientation = "landscape";
+        }
         else if (viewMode === 'pl2') { fileName = "Phu_luc_2_Ke_hoach_HDGD"; orientation = "landscape"; }
-        else if (viewMode === 'pl3') fileName = "Phu_luc_3_Ke_hoach_Day_hoc";
+        else if (viewMode === 'pl3') { fileName = "Phu_luc_3_Ke_hoach_Day_hoc"; orientation = "landscape"; }
         else { fileName = "Phu_luc_4_KHBD_CV5512"; orientation = "portrait"; }
 
         const pageSize = orientation === 'landscape' ? '29.7cm 21cm' : '21cm 29.7cm';
@@ -201,148 +376,46 @@ function App() {
             <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
             <head><meta charset="utf-8"><title>${fileName}</title>
             <style>
-                @page Section1 { size: ${pageSize}; mso-page-orientation: ${orientation}; margin: 2.0cm; }
+                @page Section1 { size: ${pageSize}; mso-page-orientation: ${orientation}; margin: 1.5cm; }
                 div.Section1 { page:Section1; }
                 body { font-family: 'Times New Roman', serif; font-size: 13pt; line-height: 1.3; color: black; }
                 table { border-collapse: collapse; width: 100%; border: 1px solid black; margin-bottom: 15px; }
-                th, td { border: 1px solid black; padding: 6px; vertical-align: top; font-size: 13pt; font-family: 'Times New Roman', serif; }
-                .header-cell { background: #f1f5f9; font-weight: bold; text-align: center; text-transform: uppercase; }
+                th, td { border: 1px solid black; padding: 6px; vertical-align: middle; font-size: 12pt; }
+                .header-cell { background: #f3f4f6; font-weight: bold; text-align: center; text-transform: uppercase; }
                 .text-center { text-align: center; }
-                .font-bold { font-weight: bold; }
-                .italic { font-style: italic; }
                 .title-main { text-align: center; text-transform: uppercase; font-weight: bold; font-size: 14pt; margin-bottom: 5px; }
                 .subtitle { text-align: center; font-weight: bold; font-size: 13pt; margin-bottom: 20px; }
-                .cv5512-header { text-align: right; font-style: italic; margin-bottom: 10px; font-size: 11pt; }
-                .section-title { font-weight: bold; text-transform: uppercase; margin-top: 15px; margin-bottom: 5px; }
-                .activity-box { border: 1px solid #000; padding: 10px; margin-bottom: 10px; }
-                .nls-box { background-color: #f0fdfa; border: 1px dashed #0d9488; padding: 5px; margin-top: 5px; font-size: 12pt; }
+                .cv-ref { text-align: right; font-style: italic; font-size: 11pt; margin-bottom: 10px; }
             </style></head><body><div class="Section1">
         `;
 
         if (viewMode === 'pl1') {
-             // ... existing PL1 export logic ...
-             htmlContent += `
-                <div class="title-main">KẾ HOẠCH DẠY HỌC TÍCH HỢP NĂNG LỰC SỐ (PHỤ LỤC 1)</div>
-                <div class="subtitle">Môn: ${currentSubject} - Khối: ${currentGrade}</div>
-             `;
+             htmlContent += `<div class="title-main">KẾ HOẠCH DẠY HỌC TÍCH HỢP NĂNG LỰC SỐ</div><div class="subtitle">Môn: ${currentSubject} - Khối: ${currentGrade}</div>`;
              let globalPeriod = 1;
              let stt = 1;
             [1, 2].forEach(sem => {
                 const semTopics = currentGradeData.filter(t => (t.semester || 1) === sem);
                 if (semTopics.length === 0) return;
-                htmlContent += `<div style="font-weight:bold; margin-top:20px;">HỌC KÌ ${sem === 1 ? 'I' : 'II'}</div>`;
-                htmlContent += `<table><thead><tr><th class="header-cell" style="width:5%">STT</th><th class="header-cell" style="width:25%">Bài học</th><th class="header-cell" style="width:10%">Tiết</th><th class="header-cell" style="width:10%">Số tiết</th><th class="header-cell" style="width:35%">Yêu cầu cần đạt</th><th class="header-cell" style="width:15%">NLS</th></tr></thead><tbody>`;
+                htmlContent += `<div style="font-weight:bold; margin: 15px 0;">HỌC KÌ ${sem === 1 ? 'I' : 'II'}</div>`;
+                htmlContent += `<table><thead><tr><th class="header-cell" style="width:5%">STT</th><th class="header-cell" style="width:25%">Bài học</th><th class="header-cell" style="width:8%">Tiết</th><th class="header-cell" style="width:8%">Số tiết</th><th class="header-cell" style="width:35%">Yêu cầu cần đạt</th><th class="header-cell" style="width:19%">NLS</th></tr></thead><tbody>`;
                 semTopics.forEach(topic => {
-                    htmlContent += `<tr><td colspan="6" style="background:#f8fafc; font-weight:bold;">${topic.topic}</td></tr>`;
+                    htmlContent += `<tr><td colspan="6" style="background:#f9fafb; font-weight:bold;">${topic.topic}</td></tr>`;
                     topic.lessons.forEach(l => {
-                        const codes = Object.keys(l.mappings || {}).filter(c => l.mappings[c].selected).join('<br>');
-                        const periodsCount = l.periods || (l.title.toLowerCase().includes("kiểm tra") ? 1 : 2);
-                        let periodRange = periodsCount === 1 ? `${globalPeriod}` : `${globalPeriod} - ${globalPeriod + periodsCount - 1}`;
-                        globalPeriod += periodsCount;
-                        htmlContent += `<tr><td class="text-center">${stt++}</td><td>${l.title}</td><td class="text-center">${periodRange}</td><td class="text-center">${periodsCount}</td><td>${l.yccd.map(y => `- ${y}`).join('<br>')}</td><td class="text-center font-bold">${codes}</td></tr>`;
+                        const codes = Object.keys(l.mappings || {}).filter(c => l.mappings[c].selected).join(', ');
+                        const periods = l.periods || 2;
+                        let range = periods === 1 ? `${globalPeriod}` : `${globalPeriod}-${globalPeriod + periods - 1}`;
+                        globalPeriod += periods;
+                        htmlContent += `<tr><td class="text-center">${stt++}</td><td>${l.title}</td><td class="text-center">${range}</td><td class="text-center">${periods}</td><td>${l.yccd.join('<br>')}</td><td class="text-center font-bold">${codes}</td></tr>`;
                     });
                 });
                 htmlContent += `</tbody></table>`;
             });
-        } else if (viewMode === 'pl2') {
-             htmlContent += `
-                <table style="width: 100%; border: none; margin-bottom: 20px;">
-                    <tr>
-                        <td style="width: 40%; text-align: center; vertical-align: top; border: none;">
-                            TRƯỜNG: ........................................<br>
-                            <b>TỔ: .............................................</b>
-                        </td>
-                        <td style="width: 60%; text-align: center; vertical-align: top; border: none;">
-                            <b>CỘNG HOÀ XÃ HỘI CHỦ NGHĨA VIỆT NAM</b><br>
-                            <b>Độc lập - Tự do - Hạnh phúc</b>
-                        </td>
-                    </tr>
-                </table>
-
-                <div style="text-align: center; font-weight: bold; margin-bottom: 5px; margin-top: 20px;">
-                    KẾ HOẠCH TỔ CHỨC CÁC HOẠT ĐỘNG GIÁO DỤC CỦA TỔ CHUYÊN MÔN
-                </div>
-                <div style="text-align: center; margin-bottom: 20px; font-weight: bold;">(Năm học 20..... - 20.....)</div>
-
-                <div style="text-align: right; font-style: italic; margin-bottom: 20px;">
-                    Phụ lục II<br>
-                    KHUNG KẾ HOẠCH TỔ CHỨC CÁC HOẠT ĐỘNG GIÁO DỤC CỦA TỔ CHUYÊN MÔN<br>
-                    (Kèm theo Công văn số 5512/BGDĐT-GDTrH ngày 18 tháng 12 năm 2020 của Bộ GDĐT)
-                </div>
-             `;
-             
-             const grades: Grade[] = ["6", "7", "8", "9"];
-             let hasActivity = false;
-
-             grades.forEach((g, gIdx) => {
-                 const gData = currentSubjectData[g] || [];
-                 
-                 // Calculate timings
-                 let currentWeek = 1;
-                 const lessonTimings: Record<string | number, string> = {};
-                 
-                 gData.forEach(topic => {
-                     if (topic.semester === 2 && currentWeek < 19) currentWeek = 19;
-                     topic.lessons.forEach(l => {
-                         const p = l.periods || (l.title.toLowerCase().includes("kiểm tra") ? 1 : 2);
-                         const start = currentWeek;
-                         const end = currentWeek + p - 1;
-                         const timing = start === end ? `Tuần ${start}` : `Tuần ${start} - ${end}`;
-                         lessonTimings[l.id] = timing;
-                         currentWeek += p;
-                     });
-                 });
-
-                 const activityLessons: Lesson[] = [];
-                 gData.forEach(t => {
-                     if (isActivityTopic(t.topic)) activityLessons.push(...t.lessons);
-                 });
-
-                 if (activityLessons.length > 0) {
-                     hasActivity = true;
-                     htmlContent += `<div style="font-weight:bold; margin-top:15px; margin-bottom:5px;">${gIdx + 1}. Khối lớp: ${g}; Số học sinh: ....................</div>`;
-                     htmlContent += `<table><thead><tr>
-                        <th class="header-cell" style="width:5%">STT</th>
-                        <th class="header-cell" style="width:20%">Chủ đề<br>(1)</th>
-                        <th class="header-cell" style="width:25%">Yêu cầu cần đạt<br>(2)</th>
-                        <th class="header-cell" style="width:5%">Số tiết<br>(3)</th>
-                        <th class="header-cell" style="width:10%">Thời điểm<br>(4)</th>
-                        <th class="header-cell" style="width:10%">Địa điểm<br>(5)</th>
-                        <th class="header-cell" style="width:10%">Chủ trì<br>(6)</th>
-                        <th class="header-cell" style="width:10%">Phối hợp<br>(7)</th>
-                        <th class="header-cell" style="width:5%">Điều kiện<br>(8)</th>
-                     </tr></thead><tbody>`;
-                     
-                     activityLessons.forEach((l, i) => {
-                         htmlContent += `<tr>
-                            <td class="text-center">${i + 1}</td>
-                            <td>${l.title}</td>
-                            <td>${l.yccd.map(y => `- ${y}`).join('<br>')}</td>
-                            <td class="text-center">${l.periods || 2}</td>
-                            <td class="text-center">${lessonTimings[l.id] || ''}</td>
-                            <td>${l.location || ''}</td>
-                            <td>${l.host || ''}</td>
-                            <td>${l.collaborator || ''}</td>
-                            <td>${l.equipment || ''}</td>
-                         </tr>`;
-                     });
-                     htmlContent += `</tbody></table>`;
-                 }
-             });
-
-             if (!hasActivity) {
-                 htmlContent += `<p style="text-align:center; font-style:italic;">Chưa có hoạt động giáo dục nào.</p>`;
-             }
-
-             htmlContent += `
-                <div style="display:flex; justify-content:space-between; margin-top:30px; font-weight:bold;">
-                    <div style="text-align:center;">TỔ TRƯỞNG<br><span style="font-weight:normal; font-style:italic;">(Ký và ghi rõ họ tên)</span></div>
-                    <div style="text-align:center;">HIỆU TRƯỞNG<br><span style="font-weight:normal; font-style:italic;">(Ký và ghi rõ họ tên)</span></div>
-                </div>
-             `;
         } else if (viewMode === 'pl3') {
-            // ... existing PL3 export logic ...
-            htmlContent += `<div class="title-main">KẾ HOẠCH DẠY HỌC MÔN HỌC (PHỤ LỤC 3)</div><div class="subtitle">Môn: ${currentSubject} - Khối: ${currentGrade}</div>`;
+            htmlContent += `
+                <div class="cv-ref">Phụ lục III<br>KHUNG KẾ HOẠCH DẠY HỌC MÔN HỌC CỦA TỔ CHUYÊN MÔN<br>(Kèm theo Công văn số 5512/BGDĐT-GDTrH)</div>
+                <div class="title-main">KẾ HOẠCH DẠY HỌC CỦA TỔ CHUYÊN MÔN</div>
+                <div class="subtitle">MÔN HỌC: ${currentSubject.toUpperCase()} - KHỐI LỚP: ${currentGrade}</div>
+            `;
             let globalWeek = 1;
             let stt = 1;
             [1, 2].forEach(sem => {
@@ -350,182 +423,204 @@ function App() {
                 if (semTopics.length === 0) return;
                 if (sem === 2 && globalWeek < 19) globalWeek = 19;
                 htmlContent += `<div style="font-weight:bold; margin-top:20px;">HỌC KÌ ${sem === 1 ? 'I' : 'II'}</div>`;
-                htmlContent += `<table><thead><tr><th class="header-cell">STT</th><th class="header-cell">Bài dạy / Nội dung</th><th class="header-cell">Số tiết</th><th class="header-cell">Thời điểm</th><th class="header-cell">Thiết bị dạy học</th><th class="header-cell">Địa điểm</th><th class="header-cell">NLS Tích hợp</th></tr></thead><tbody>`;
+                htmlContent += `<table><thead><tr>
+                    <th class="header-cell">STT</th>
+                    <th class="header-cell">Bài dạy / Nội dung</th>
+                    <th class="header-cell">Số tiết</th>
+                    <th class="header-cell">Thời điểm</th>
+                    <th class="header-cell">Thiết bị dạy học</th>
+                    <th class="header-cell">Địa điểm</th>
+                    <th class="header-cell" style="width:30%">Yêu cầu cần đạt (NLS)</th>
+                </tr></thead><tbody>`;
                 semTopics.forEach(topic => {
-                    htmlContent += `<tr><td colspan="7" style="background:#f8fafc; font-weight:bold;">${topic.topic}</td></tr>`;
+                    htmlContent += `<tr><td colspan="7" style="background:#f9fafb; font-weight:bold;">${topic.topic}</td></tr>`;
                     topic.lessons.forEach(l => {
-                        const codes = Object.keys(l.mappings || {}).filter(c => l.mappings[c].selected).join(', ');
-                        const periods = l.periods || (l.title.toLowerCase().includes("kiểm tra") ? 1 : 2);
-                        let weekDisp = periods <= 1 ? `Tuần ${globalWeek}` : `Tuần ${globalWeek} - ${globalWeek + periods - 1}`;
-                        globalWeek += periods;
-                        htmlContent += `<tr><td class="text-center">${stt++}</td><td>${l.title}</td><td class="text-center">${periods}</td><td class="text-center font-bold">${weekDisp}</td><td>${l.equipment || ''}</td><td>${l.location || ''}</td><td class="text-center">${codes}</td></tr>`;
+                        const mappings = l.mappings || {};
+                        const nlsContent = Object.keys(mappings)
+                            .filter(code => mappings[code].selected)
+                            .map(code => {
+                                const reason = mappings[code].reason || '';
+                                return `<div><b>${code}.</b><br/>${reason}</div>`;
+                            })
+                            .join('<div style="margin-top:6px; margin-bottom:6px; border-bottom:1px dashed #e5e7eb;"></div>');
+
+                        const p = l.periods || 2;
+                        let weekDisp = p <= 1 ? `Tuần ${globalWeek}` : `Tuần ${globalWeek}-${globalWeek + p - 1}`;
+                        globalWeek += p;
+                        htmlContent += `<tr>
+                            <td class="text-center">${stt++}</td>
+                            <td>${l.title}</td>
+                            <td class="text-center">${p}</td>
+                            <td class="text-center font-bold">${weekDisp}</td>
+                            <td>${l.equipment || ''}</td>
+                            <td>${l.location || ''}</td>
+                            <td style="text-align:left; font-size:11pt; vertical-align: top;">${nlsContent}</td>
+                        </tr>`;
                     });
                 });
                 htmlContent += `</tbody></table>`;
             });
-        } else if (viewMode === 'pl4' && activeLesson) {
-            // ... (Existing PL4 logic) ...
-            const selectedCodes = Object.keys(activeLesson.mappings || {}).filter(c => activeLesson.mappings[c].selected);
-            const getReason = (c: string) => activeLesson.mappings[c]?.reason || '';
-            const getText = (c: string) => activeCompetencies.find(x => x.code === c)?.text || '';
-            const nlsListHtml = selectedCodes.length > 0 
-                    ? `<ul style="margin-left:20px;">${selectedCodes.map(c => `<li><b>${c}:</b> ${getText(c)}.<br><i>Minh chứng: ${getReason(c)}</i></li>`).join('')}</ul>` 
-                    : '<p style="margin-left:20px; font-style:italic;">Chưa chọn năng lực số tích hợp.</p>';
-            
-            // Common Header for PL4
-            htmlContent += `
-                <div class="cv5512-header">
-                    Phụ lục IV<br>KHUNG KẾ HOẠCH BÀI DẠY<br>(Kèm theo Công văn số 5512/BGDĐT-GDTrH)
-                </div>
-                <div style="display:flex; justify-content:space-between; margin-bottom:20px;">
-                    <div>Trường: ........................................<br>Tổ: .............................................</div>
-                    <div>Họ và tên giáo viên:<br>.......................................................</div>
-                </div>
-                <div class="title-main">TÊN BÀI DẠY: ${activeLesson.title.toUpperCase()}</div>
-                <div class="text-center" style="margin-bottom:20px;">Môn học: ${currentSubject}; Lớp: ${currentGrade}<br>Thời gian thực hiện: ${activeLesson.periods || 1} tiết</div>
-
-                <div class="section-title">I. MỤC TIÊU</div>
-                <div style="margin-left: 10px;">
-                    <p><b>1. Về kiến thức:</b></p>
-                    <ul style="margin-left: 20px;">${activeLesson.yccd.map(y => `<li>${y}</li>`).join('')}</ul>
-                    <p><b>2. Về năng lực:</b></p>
-                    <p style="margin-left: 20px;">- <b>Năng lực chung:</b> Tự chủ và tự học, Giao tiếp và hợp tác, Giải quyết vấn đề và sáng tạo.</p>
-                    <p style="margin-left: 20px;">- <b>Năng lực riêng:</b> Nhận thức khoa học, Tìm hiểu tự nhiên, Vận dụng kiến thức.</p>
-                    <p style="margin-left: 20px; text-decoration: underline;">- <b>Năng lực số (Tích hợp):</b></p>
-                    ${nlsListHtml}
-                    <p><b>3. Về phẩm chất:</b></p>
-                    <p style="margin-left: 20px;">Chăm chỉ, trung thực, trách nhiệm.</p>
-                </div>
-
-                <div class="section-title">II. THIẾT BỊ DẠY HỌC VÀ HỌC LIỆU</div>
-                <ul style="margin-left: 20px;">
-                    <li>Thiết bị: ${activeLesson.equipment || 'Máy tính, máy chiếu.'}</li>
-                    <li>Học liệu: SGK, phiếu học tập.</li>
-                </ul>
-
-                <div class="section-title">III. TIẾN TRÌNH DẠY HỌC</div>
-            `;
-
-            if (activeLesson.planData && activeLesson.planData.length > 0) {
-                activeLesson.planData.forEach(section => {
-                    htmlContent += `
-                        <div class="activity-box">
-                            <p><b>${section.label}. ${section.title}</b> (${section.duration ? section.duration + " phút" : ""})</p>
-                            <p><b>a) Mục tiêu:</b> ${section.objective}</p>
-                            <p><b>b) Nội dung:</b> ${section.content}</p>
-                            <p><b>c) Sản phẩm:</b> ${section.product}</p>
-                            <p><b>d) Tổ chức thực hiện:</b></p>
-                            <div style="margin-left:15px;">
-                                ${section.steps.map(step => `
-                                    <p><b>- ${step.title}:</b> ${step.content}</p>
-                                    ${step.nlsCodes && step.nlsCodes.length > 0 ? `<div class="nls-box"><b>* Tích hợp NLS:</b> ${step.nlsCodes.join(', ')}</div>` : ''}
-                                `).join('')}
-                            </div>
-                        </div>
-                    `;
-                });
-            } else if (activeLesson.activities) {
-                htmlContent += activeLesson.activities;
-            } else {
-                htmlContent += `<p style="text-align:center; font-style:italic;">(Chưa có nội dung chi tiết)</p>`;
-            }
         }
 
         htmlContent += `</div></body></html>`;
         const blob = new Blob(['\ufeff', htmlContent], { type: 'application/msword' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
-        link.download = `${fileName}_${currentSubject}_${viewMode === 'pl2' ? 'ToanCap' : `L${currentGrade}`}.doc`;
+        link.download = `${fileName}_${currentSubject}_L${currentGrade}.doc`;
         link.click();
         addToast('success', 'Đã xuất file Word thành công!');
     };
 
+    const handleExportJson = () => {
+        // Chỉ xuất dữ liệu của môn học hiện tại
+        // Lấy chính xác từ fullData dựa trên currentSubject
+        const subjectData = fullData[currentSubject];
+        
+        if (!subjectData || Object.keys(subjectData).length === 0) {
+            addToast('error', `Không có dữ liệu để xuất cho môn ${currentSubject}.`);
+            return;
+        }
+
+        const dataToExport = {
+            [currentSubject]: subjectData
+        };
+        
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(dataToExport, null, 2));
+        const link = document.createElement('a');
+        const timestamp = new Date().toISOString().slice(0, 10);
+        link.setAttribute("href", dataStr);
+        link.setAttribute("download", `EduPlan_${currentSubject}_${timestamp}.json`);
+        link.click();
+        addToast('info', `Đã tải xuống bản sao lưu cho môn ${currentSubject}.`);
+    };
+
+    const handleJsonImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const text = e.target?.result as string;
+                const importedData = JSON.parse(text);
+                if (typeof importedData === 'object' && importedData !== null) {
+                    setFullData(prev => ({ ...prev, ...importedData }));
+                    addToast('success', 'Đã nhập dữ liệu thành công! (Dữ liệu đã được lưu)');
+                } else {
+                    addToast('error', 'File JSON không hợp lệ.');
+                }
+            } catch (error) {
+                console.error("Import error:", error);
+                addToast('error', 'Lỗi khi đọc file JSON.');
+            } finally {
+                if (fileInputRef.current) fileInputRef.current.value = '';
+            }
+        };
+        reader.readAsText(file);
+    };
+
     return (
         <div className="h-screen flex flex-col overflow-hidden font-sans text-sm text-slate-700 bg-slate-100">
+            <LoadingOverlay isVisible={isAiLoading} message="AI đang xử lý..." />
+            
+            <input 
+                type="file" 
+                ref={fileInputRef} 
+                className="hidden" 
+                accept=".json"
+                onChange={handleJsonImport}
+            />
+
+            {showAiImportModal && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+                    <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-200">
+                        <div className="bg-gradient-to-r from-violet-700 to-indigo-700 text-white px-6 py-4 flex justify-between items-center">
+                            <h2 className="text-xl font-bold flex items-center gap-2"><BrainCircuit /> AI Curriculum Architect</h2>
+                            <button onClick={() => setShowAiImportModal(false)}><X size={24} /></button>
+                        </div>
+                        <div className="p-6">
+                            <textarea 
+                                className="w-full h-80 p-4 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 outline-none text-sm font-mono"
+                                placeholder="Dán nội dung chương trình thô..."
+                                value={aiImportText}
+                                onChange={e => setAiImportText(e.target.value)}
+                            />
+                            <div className="mt-6 flex justify-end gap-3">
+                                <button onClick={() => setShowAiImportModal(false)} className="px-5 py-2 text-slate-600 font-bold hover:bg-slate-100 rounded-lg">Hủy bỏ</button>
+                                <button onClick={handleAiImportCurriculum} className="bg-violet-600 text-white px-6 py-2 rounded-lg font-bold shadow-lg hover:bg-violet-700 flex items-center gap-2">
+                                    <Sparkles size={18} /> Phân tích với AI
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <CompetencyMatrix 
-                isVisible={showMatrixModal}
-                onClose={() => setShowMatrixModal(false)}
-                currentSubject={currentSubject}
-                fullSubjectData={currentSubjectData}
-                itData={fullITData}
+                isVisible={showMatrixModal} onClose={() => setShowMatrixModal(false)}
+                currentSubject={currentSubject} fullSubjectData={currentSubjectData} itData={fullITData}
                 onAddSupplementaryLesson={handleAddSupplementary}
             />
+
             <Header 
-                currentGrade={currentGrade} setGrade={setGrade} 
-                currentSubject={currentSubject} setSubject={setSubject}
+                currentGrade={currentGrade} setGrade={handleSetGrade} 
+                currentSubject={currentSubject} setSubject={handleSetSubject}
                 viewMode={viewMode} setViewMode={setViewMode}
-                onExportWord={handleExportWord}
+                onExportWord={handleExportWord} onExportJson={handleExportJson}
+                onImportJson={() => fileInputRef.current?.click()}
                 onOpenMatrix={() => setShowMatrixModal(true)}
-                onExportJson={() => {
-                    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(fullData, null, 2));
-                    const link = document.createElement('a');
-                    link.setAttribute("href", dataStr);
-                    link.setAttribute("download", `EduPlan_Backup.json`);
-                    link.click();
-                }}
             />
+
             <div className="flex flex-grow overflow-hidden">
                 <Sidebar 
                     topics={currentGradeData} currentLessonId={currentLessonId}
                     onSelectLesson={setCurrentLessonId}
+                    onOpenAiImport={() => setShowAiImportModal(true)}
                     onAddLesson={() => {
-                        const newData = [...currentGradeData];
-                        if (newData.length === 0) newData.push({ topic: "Chủ đề mới", semester: 1, lessons: [] });
-                        const newL: Lesson = { id: Date.now(), title: "Bài học mới", yccd: [""], mappings: {}, periods: 2, equipment: "Máy tính, máy chiếu", location: "Phòng Tin học" };
-                        newData[0].lessons.push(newL);
+                        const l: Lesson = { id: Date.now().toString(), title: "Bài học mới", yccd: [""], mappings: {}, periods: 2, equipment: "Máy tính", location: "Phòng học" };
+                        const newData = JSON.parse(JSON.stringify(currentGradeData));
+                        if (newData.length > 0) newData[0].lessons.push(l);
+                        else newData.push({ topic: "Chủ đề mới", semester: 1, lessons: [l] });
                         updateCurriculum(newData);
-                        setCurrentLessonId(newL.id);
+                        setCurrentLessonId(l.id);
                     }}
                     onAddTopic={() => updateCurriculum([...currentGradeData, { topic: "Chủ đề mới", semester: 1, lessons: [] }])}
-                    onDeleteLesson={(id) => updateCurriculum(currentGradeData.map(t => ({ ...t, lessons: t.lessons.filter(l => l.id !== id) })))}
-                    onMoveLesson={(id, dir) => {}} onMoveTopic={(idx, dir) => {}} onReorderLesson={() => {}}
+                    onDeleteLesson={(id) => updateCurriculum(currentGradeData.map(t => ({ ...t, lessons: t.lessons.filter(l => String(l.id) !== String(id)) })))}
+                    onMoveLesson={handleMoveLesson} 
+                    onMoveTopic={handleMoveTopic} 
+                    onReorderLesson={handleReorderLesson}
+                    onReorderTopic={handleReorderTopic}
                 />
                 <main className="flex-grow overflow-y-auto custom-scroll p-6 bg-slate-50 relative">
-                    {viewMode === 'pl2' ? (
-                        <ActivityTable 
-                            fullSubjectData={currentSubjectData}
-                            onUpdateActivity={handleUpdateActivity}
+                    {viewMode === 'pl1' && activeLesson && (
+                        <CompetencyTable 
+                            lesson={activeLesson} competencies={activeCompetencies} currentSubject={currentSubject}
+                            filterMode={filterMode} onToggleFilter={() => setFilterMode(!filterMode)}
+                            topicName={context?.topic.topic || ""} isAiLoading={isAiLoading}
+                            allLessonsInGrade={allLessonsInGrade}
+                            referenceITData={referenceITData} usageMap={globalUsageMap}
+                            onUpdateTitle={(t) => updateActiveLesson({ title: t })}
+                            onUpdateTopic={(t) => { const nd = JSON.parse(JSON.stringify(currentGradeData)); nd[context!.topicIndex].topic = t; updateCurriculum(nd); }}
+                            onUpdateYCCD={(i, v) => { const ny = [...activeLesson.yccd]; ny[i] = v; updateActiveLesson({ yccd: ny }); }}
+                            onBulkUpdateYCCD={(y) => updateActiveLesson({ yccd: y })}
+                            onAddYCCD={() => updateActiveLesson({ yccd: [...activeLesson.yccd, ""] })}
+                            onDeleteYCCD={(i) => { const ny = [...activeLesson.yccd]; ny.splice(i, 1); updateActiveLesson({ yccd: ny }); }}
+                            onMappingChange={(c, s) => { const nm = { ...activeLesson.mappings }; if (s) nm[c] = { selected: true, reason: '' }; else delete nm[c]; updateActiveLesson({ mappings: nm }); }}
+                            onReasonChange={(c, r) => { const nm = { ...activeLesson.mappings }; if (nm[c]) nm[c].reason = r; updateActiveLesson({ mappings: nm }); }}
+                            onBulkApplyMappings={handleBulkApplyMappings}
+                            onSuggestAI={() => {}} onRewriteReasonWithAI={async () => {}} onSplitLesson={() => {}} onMergeNext={() => {}} onMergePrevious={() => {}}
+                            canMergeNext={false} canMergePrevious={false}
                         />
-                    ) : (
-                        activeLesson ? (
-                            <>
-                                {viewMode === 'pl1' && <CompetencyTable 
-                                    lesson={activeLesson} competencies={activeCompetencies} currentSubject={currentSubject}
-                                    filterMode={filterMode} onToggleFilter={() => setFilterMode(!filterMode)}
-                                    topicName={context?.topic.topic || ""} isAiLoading={isAiLoading}
-                                    usageMap={globalUsageMap} allLessonsInGrade={allLessonsInGrade}
-                                    referenceITData={referenceITData}
-                                    onUpdateTitle={(t) => updateActiveLesson({ title: t })}
-                                    onUpdateTopic={(t) => { const nd = [...currentGradeData]; nd[context!.topicIndex].topic = t; updateCurriculum(nd); }}
-                                    onUpdateYCCD={(i, v) => { const ny = [...activeLesson.yccd]; ny[i] = v; updateActiveLesson({ yccd: ny }); }}
-                                    onBulkUpdateYCCD={(y) => updateActiveLesson({ yccd: y })}
-                                    onAddYCCD={() => updateActiveLesson({ yccd: [...activeLesson.yccd, ""] })}
-                                    onDeleteYCCD={(i) => { const ny = [...activeLesson.yccd]; ny.splice(i, 1); updateActiveLesson({ yccd: ny }); }}
-                                    onMappingChange={(c, s) => { const nm = { ...activeLesson.mappings }; if (s) nm[c] = { selected: true, reason: '' }; else delete nm[c]; updateActiveLesson({ mappings: nm }); }}
-                                    onReasonChange={(c, r) => { const nm = { ...activeLesson.mappings }; if (nm[c]) nm[c].reason = r; updateActiveLesson({ mappings: nm }); }}
-                                    onSuggestAI={() => {}} onRewriteReasonWithAI={async () => {}} onSplitLesson={() => {}} onMergeNext={() => {}} onMergePrevious={() => {}}
-                                    canMergeNext={false} canMergePrevious={false}
-                                />}
-                                {viewMode === 'pl3' && <ScheduleTable 
-                                    topics={currentGradeData} competencies={activeCompetencies}
-                                    onUpdateLesson={(id, upd) => updateCurriculum(currentGradeData.map(t => ({ ...t, lessons: t.lessons.map(l => l.id === id ? { ...l, ...upd } : l) })))}
-                                    onBulkUpdateField={(f, v) => {
-                                        updateCurriculum(currentGradeData.map(t => ({ ...t, lessons: t.lessons.map(l => ({ ...l, [f]: v })) })));
-                                        addToast('success', `Đã áp dụng "${v}" cho toàn bộ kế hoạch.`);
-                                    }}
-                                />}
-                                {viewMode === 'pl4' && <LessonPlanDoc 
-                                    lesson={activeLesson} 
-                                    competencies={activeCompetencies} 
-                                    currentSubject={currentSubject}
-                                    currentGrade={currentGrade}
-                                    onUpdateLesson={updateActiveLesson}
-                                />}
-                            </>
-                        ) : (
-                            <div className="h-full flex items-center justify-center text-slate-400 italic">Chọn bài học để bắt đầu.</div>
-                        )
                     )}
+                    {viewMode === 'pl3' && (
+                        <ScheduleTable 
+                            topics={currentGradeData} competencies={activeCompetencies}
+                            onUpdateLesson={handleUpdateLessonById}
+                            onBulkUpdateField={handleBulkUpdateField}
+                        />
+                    )}
+                    {viewMode === 'pl2' && <ActivityTable fullSubjectData={currentSubjectData} onUpdateActivity={() => {}} />}
+                    {viewMode === 'pl4' && activeLesson && <LessonPlanDoc lesson={activeLesson} competencies={activeCompetencies} currentSubject={currentSubject} currentGrade={currentGrade} onUpdateLesson={updateActiveLesson} />}
                 </main>
             </div>
             <Toast toasts={toasts} onRemove={(id) => setToasts(prev => prev.filter(t => t.id !== id))} />
